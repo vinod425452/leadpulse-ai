@@ -1,13 +1,10 @@
 import os
 import json
+import urllib.request
+import urllib.error
 from flask import Flask, request, jsonify, render_template_string
-from google import genai
-from google.genai import types
 
 app = Flask(__name__)
-
-api_key = os.environ.get("GEMINI_API_KEY")
-client = genai.Client(api_key=api_key) if api_key else None
 
 HTML_PAGE = """
 <!DOCTYPE html>
@@ -21,7 +18,7 @@ HTML_PAGE = """
 <body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
     <div class="max-w-4xl mx-auto px-4 py-8">
         <div class="border-b border-slate-800 pb-5 mb-6">
-            <span class="bg-emerald-500/10 text-emerald-400 text-xs font-semibold px-3 py-1 rounded-full border border-emerald-500/20">AI SALES ENGINE v1.2</span>
+            <span class="bg-emerald-500/10 text-emerald-400 text-xs font-semibold px-3 py-1 rounded-full border border-emerald-500/20">AI SALES ENGINE v1.3</span>
             <h1 class="text-3xl font-bold mt-2 tracking-tight">LeadPulse AI</h1>
             <p class="text-slate-400 text-sm mt-1">Qualify incoming leads in 2 seconds & generate instant WhatsApp replies.</p>
         </div>
@@ -109,6 +106,9 @@ HTML_PAGE = """
             btn.disabled = true;
             errorBox.classList.add('hidden');
 
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 9000);
+
             const payload = {
                 business_type: document.getElementById('business_type').value,
                 name: document.getElementById('name').value,
@@ -120,14 +120,17 @@ HTML_PAGE = """
                 const res = await fetch('/api/qualify', {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(payload)
+                    body: JSON.stringify(payload),
+                    signal: controller.signal
                 });
+                clearTimeout(timer);
+
                 const text = await res.text();
                 let data;
                 try {
                     data = JSON.parse(text);
                 } catch {
-                    throw new Error("Vercel Timeout / Raw Response: " + text.slice(0, 180));
+                    throw new Error("Server Error: " + text.slice(0, 180));
                 }
 
                 if (!res.ok || data.error) {
@@ -155,7 +158,7 @@ HTML_PAGE = """
             } catch (err) {
                 placeholder.classList.add('hidden');
                 resultBox.classList.add('hidden');
-                errorBox.innerText = err.message;
+                errorBox.innerText = err.name === 'AbortError' ? 'Request Timeout (9s): Server slow hai, dobara try karo.' : err.message;
                 errorBox.classList.remove('hidden');
             } finally {
                 btn.innerText = 'Analyze & Qualify Lead ⚡';
@@ -180,7 +183,8 @@ def home():
 
 @app.route("/api/qualify", methods=["POST"])
 def qualify_lead():
-    if not client:
+    api_key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not api_key:
         return jsonify({"error": "GEMINI_API_KEY missing hai!"}), 500
 
     data = request.json or {}
@@ -189,29 +193,27 @@ def qualify_lead():
     inquiry = data.get("inquiry", "")
     budget = data.get("budget", "Not specified")
 
-    prompt = f"""
-    Analyze this {business_type} lead in India and return ONLY valid JSON:
-    Name: {name}, Budget: {budget}, Message: "{inquiry}"
-    JSON format:
-    {{
-        "score": "HOT" or "WARM" or "COLD",
-        "confidence_percent": 90,
-        "reason": "1-line reason in Hinglish",
-        "recommended_action": "Next step for sales team",
-        "instant_reply": "WhatsApp reply to {name} (max 50 words)"
-    }}
-    """
+    prompt = f"""Analyze this {business_type} lead in India and return ONLY valid JSON:
+Name: {name}, Budget: {budget}, Message: "{inquiry}"
+Format:
+{{"score": "HOT", "confidence_percent": 92, "reason": "1-line reason in Hinglish", "recommended_action": "Next step for sales team", "instant_reply": "WhatsApp reply to {name} (max 50 words)"}}"""
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.8-flash:generateContent?key={api_key}"
+    body = json.dumps({
+        "contents": [{"parts": [{"text": prompt}]}],
+        "generationConfig": {"responseMimeType": "application/json", "temperature": 0.3}
+    }).encode("utf-8")
+
+    req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
 
     try:
-        response = client.models.generate_content(
-            model="gemini-3.8-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                response_mime_type="application/json",
-                temperature=0.3
-            )
-        )
-        return jsonify(json.loads(response.text))
+        with urllib.request.urlopen(req, timeout=7) as resp:
+            resp_data = json.loads(resp.read().decode("utf-8"))
+            raw_text = resp_data["candidates"][0]["content"]["parts"][0]["text"]
+            return jsonify(json.loads(raw_text))
+    except urllib.error.HTTPError as e:
+        err_body = e.read().decode("utf-8", errors="ignore")
+        return jsonify({"error": f"Google API {e.code}: {err_body[:250]}"}), 500
     except Exception as e:
         return jsonify({"error": str(e)}), 500
     
