@@ -21,7 +21,7 @@ HTML_PAGE = """
 <body class="bg-slate-950 text-slate-100 min-h-screen font-sans">
     <div class="max-w-4xl mx-auto px-4 py-8">
         <div class="border-b border-slate-800 pb-5 mb-6">
-            <span class="bg-emerald-500/10 text-emerald-400 text-xs font-semibold px-3 py-1 rounded-full border border-emerald-500/20">AI SALES ENGINE v1.1</span>
+            <span class="bg-emerald-500/10 text-emerald-400 text-xs font-semibold px-3 py-1 rounded-full border border-emerald-500/20">AI SALES ENGINE v1.2</span>
             <h1 class="text-3xl font-bold mt-2 tracking-tight">LeadPulse AI</h1>
             <p class="text-slate-400 text-sm mt-1">Qualify incoming leads in 2 seconds & generate instant WhatsApp replies.</p>
         </div>
@@ -127,7 +127,7 @@ HTML_PAGE = """
                 try {
                     data = JSON.parse(text);
                 } catch {
-                    throw new Error("Server response invalid: " + text.slice(0, 150));
+                    throw new Error("Vercel Timeout / Raw Response: " + text.slice(0, 180));
                 }
 
                 if (!res.ok || data.error) {
@@ -155,7 +155,7 @@ HTML_PAGE = """
             } catch (err) {
                 placeholder.classList.add('hidden');
                 resultBox.classList.add('hidden');
-                errorBox.innerText = 'Network/Server Error: ' + err.message;
+                errorBox.innerText = err.message;
                 errorBox.classList.remove('hidden');
             } finally {
                 btn.innerText = 'Analyze & Qualify Lead ⚡';
@@ -181,7 +181,7 @@ def home():
 @app.route("/api/qualify", methods=["POST"])
 def qualify_lead():
     if not client:
-        return jsonify({"error": "GEMINI_API_KEY Vercel settings mein missing hai!"}), 500
+        return jsonify({"error": "GEMINI_API_KEY missing hai!"}), 500
 
     data = request.json or {}
     name = data.get("name", "Customer")
@@ -190,39 +190,28 @@ def qualify_lead():
     budget = data.get("budget", "Not specified")
 
     prompt = f"""
-    You are an expert B2B Sales Qualification AI for a {business_type} business in India.
-    Analyze this lead and return ONLY valid JSON:
-    - Name: {name}
-    - Budget: {budget}
-    - Message: "{inquiry}"
-
+    Analyze this {business_type} lead in India and return ONLY valid JSON:
+    Name: {name}, Budget: {budget}, Message: "{inquiry}"
     JSON format:
     {{
         "score": "HOT" or "WARM" or "COLD",
-        "confidence_percent": 85,
-        "reason": "1-line sharp explanation in Hinglish/English",
-        "recommended_action": "Exact next step for sales team",
-        "instant_reply": "Persuasive ready-to-send WhatsApp reply to {name} (under 60 words)"
+        "confidence_percent": 90,
+        "reason": "1-line reason in Hinglish",
+        "recommended_action": "Next step for sales team",
+        "instant_reply": "WhatsApp reply to {name} (max 50 words)"
     }}
     """
 
-    models_to_try = ["gemini-3.8-flash", "gemini-2.5-flash", "gemini-2.0-flash"]
-    last_error = ""
-
-    for model_name in models_to_try:
-        try:
-            response = client.models.generate_content(
-                model=model_name,
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    response_mime_type="application/json",
-                    temperature=0.3
-                )
+    try:
+        response = client.models.generate_content(
+            model="gemini-3.8-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                response_mime_type="application/json",
+                temperature=0.3
             )
-            return jsonify(json.loads(response.text))
-        except Exception as e:
-            last_error = f"[{model_name}]: {str(e)}"
-            continue
-
-    return jsonify({"error": last_error}), 500
+        )
+        return jsonify(json.loads(response.text))
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     
